@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LV → Plancraft Konverter</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 560px;
+            width: 100%;
+            padding: 40px;
+        }
+        h1 {
+            color: #1e3c72;
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 32px;
+        }
+        .upload-area {
+            border: 2px dashed #2a5298;
+            border-radius: 8px;
+            padding: 40px 20px;
+            text-align: center;
+            background: #f8faff;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .upload-area:hover {
+            background: #eef3ff;
+            border-color: #1e3c72;
+        }
+        .upload-area.dragover {
+            background: #e0ebff;
+            border-color: #1e3c72;
+        }
+        .upload-icon {
+            font-size: 48px;
+            color: #2a5298;
+            margin-bottom: 12px;
+        }
+        .upload-text {
+            color: #1e3c72;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+        .upload-hint {
+            color: #888;
+            font-size: 13px;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .file-name {
+            margin-top: 16px;
+            padding: 10px;
+            background: #e8f0fe;
+            border-radius: 6px;
+            color: #1e3c72;
+            font-size: 14px;
+            display: none;
+        }
+        button {
+            background: #1e3c72;
+            color: white;
+            border: none;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 20px;
+            transition: background 0.2s;
+        }
+        button:hover { background: #2a5298; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .features {
+            margin-top: 32px;
+            padding-top: 24px;
+            border-top: 1px solid #eee;
+        }
+        .features h3 {
+            color: #1e3c72;
+            font-size: 14px;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .features ul {
+            list-style: none;
+            color: #555;
+            font-size: 14px;
+        }
+        .features li {
+            padding: 6px 0;
+            padding-left: 24px;
+            position: relative;
+        }
+        .features li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #2a5298;
+            font-weight: bold;
+        }
+        .flash {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+        }
+        .flash.error {
+            background: #fee;
+            color: #c00;
+            border: 1px solid #fcc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📋 LV → Plancraft</h1>
+        <p class="subtitle">PDF Leistungsverzeichnis in 5 Sekunden in eine Plancraft-XLSX umwandeln.</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="flash {{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form action="/upload" method="post" enctype="multipart/form-data" id="uploadForm">
+            <label for="pdf_file" class="upload-area" id="dropArea">
+                <div class="upload-icon">📄</div>
+                <div class="upload-text">PDF hier ablegen oder klicken</div>
+                <div class="upload-hint">Nur PDF-Dateien, max. 50 MB</div>
+                <input type="file" id="pdf_file" name="pdf_file" accept=".pdf" required>
+                <div class="file-name" id="fileName"></div>
+            </label>
+            <button type="submit" id="submitBtn">In Plancraft-XLSX umwandeln</button>
+        </form>
+
+        <div class="features">
+            <h3>Was du bekommst</h3>
+            <ul>
+                <li>5-Spalten-XLSX im Plancraft-Import-Format</li>
+                <li>Positionen, Mengen, Einheiten automatisch erkannt</li>
+                <li>Direkt in Plancraft hochladbar</li>
+                <li>Keine KI, keine Wartezeit, keine API-Kosten</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('pdf_file');
+        const dropArea = document.getElementById('dropArea');
+        const fileName = document.getElementById('fileName');
+        const submitBtn = document.getElementById('submitForm');
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                fileName.textContent = '📎 ' + e.target.files[0].name;
+                fileName.style.display = 'block';
+            }
+        });
+
+        // Drag & Drop
+        dropArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropArea.classList.add('dragover');
+        });
+        dropArea.addEventListener('dragleave', () => dropArea.classList.remove('dragover'));
+        dropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                fileInput.files = e.dataTransfer.files;
+                fileName.textContent = '📎 ' + e.dataTransfer.files[0].name;
+                fileName.style.display = 'block';
+            }
+        });
+
+        document.getElementById('uploadForm').addEventListener('submit', () => {
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Wird verarbeitet...';
+        });
+    </script>
+</body>
+</html>
