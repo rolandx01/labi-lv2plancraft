@@ -144,6 +144,12 @@
         <h1>Erfolgreich konvertiert!</h1>
         <p class="subtitle">{{ original_name }} → Plancraft-Import-XLSX</p>
 
+        <div style="text-align: center; margin-bottom: 20px;">
+            <span style="display: inline-block; padding: 4px 12px; background: #e8f0fe; color: #1e3c72; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
+                Format: {{ erkanntes_format }}
+            </span>
+        </div>
+
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-number">{{ stats.anzahl_positionen }}</div>

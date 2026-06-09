@@ -1,6 +1,12 @@
 """
 app.py - Flask Webapp für LV → Plancraft Konverter
 
+Akzeptiert sowohl PDF- als auch XLSX-Uploads:
+- PDF: wird mit Pattern-Matching geparst (kein OCR, kein KI)
+- XLSX: wird je nach erkanntem Format konvertiert
+  - Plancraft-Format (5 Spalten): Einheiten normalisieren
+  - Förderantrag-Format (9 Spalten): Spalten mappen + normalisieren
+
 Production-kompatibel: läuft mit gunicorn, lokal mit python app.py.
 Statische Uploads/Downloads landen in /tmp (Render-Read-Only-Dateisystem).
 """
@@ -15,6 +21,7 @@ from flask import Flask, render_template, request, send_file, flash, redirect, u
 from werkzeug.utils import secure_filename
 
 from lv_parser import parse_pdf
+from xlsx_parser import parse_xlsx
 from xlsx_writer import schreibe_xlsx
 
 # Logging konfigurieren (Render sammelt stdout/stderr)
@@ -35,11 +42,16 @@ DOWNLOAD_DIR = Path(os.environ.get("DOWNLOAD_DIR", "/tmp/labi-downloads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-ALLOWED_EXTENSIONS = {"pdf"}
+ALLOWED_EXTENSIONS = {"pdf", "xlsx"}
 
 
 def erlaubte_datei(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def erlaubte_endung(filename: str) -> str:
+    """Gibt die Dateiendung in Kleinbuchstaben zurück (pdf oder xlsx)."""
+    return filename.rsplit(".", 1)[1].lower() if "." in filename else ""
 
 
 @app.route("/")
@@ -56,50 +68,65 @@ def health():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    """PDF hochladen und XLSX generieren."""
-    if "pdf_file" not in request.files:
+    """PDF oder XLSX hochladen und Plancraft-XLSX generieren."""
+    if "lv_file" not in request.files:
         flash("Keine Datei hochgeladen", "error")
         return redirect(url_for("index"))
 
-    file = request.files["pdf_file"]
+    file = request.files["lv_file"]
     if file.filename == "":
         flash("Keine Datei ausgewählt", "error")
         return redirect(url_for("index"))
 
     if not erlaubte_datei(file.filename):
-        flash("Nur PDF-Dateien erlaubt", "error")
+        flash("Nur PDF- und XLSX-Dateien erlaubt", "error")
         return redirect(url_for("index"))
+
+    endung = erlaubte_endung(file.filename)
 
     # Datei sicher speichern
     original_name = secure_filename(file.filename)
     unique_id = uuid.uuid4().hex[:8]
-    pdf_pfad = UPLOAD_DIR / f"{unique_id}_{original_name}"
-    file.save(pdf_pfad)
-    logger.info(f"PDF gespeichert: {pdf_pfad} ({pdf_pfad.stat().st_size} bytes)")
+    input_pfad = UPLOAD_DIR / f"{unique_id}_{original_name}"
+    file.save(input_pfad)
+    logger.info(f"Datei gespeichert: {input_pfad} ({input_pfad.stat().st_size} bytes, {endung})")
 
-    # PDF parsen
-    try:
-        ergebnis = parse_pdf(str(pdf_pfad))
-    except Exception as e:
-        logger.exception("Parser-Fehler")
-        flash(f"Fehler beim Lesen des PDFs: {e}", "error")
+    # Parsen je nach Format
+    if endung == "pdf":
+        try:
+            ergebnis = parse_pdf(str(input_pfad))
+        except Exception as e:
+            logger.exception("PDF-Parser-Fehler")
+            flash(f"Fehler beim Lesen des PDFs: {e}", "error")
+            return redirect(url_for("index"))
+        erkanntes_format = "pdf"
+    elif endung == "xlsx":
+        try:
+            ergebnis = parse_xlsx(str(input_pfad))
+        except Exception as e:
+            logger.exception("XLSX-Parser-Fehler")
+            flash(f"Fehler beim Lesen der XLSX: {e}", "error")
+            return redirect(url_for("index"))
+        erkanntes_format = ergebnis.erkanntes_format
+    else:
+        flash(f"Unbekanntes Format: {endung}", "error")
         return redirect(url_for("index"))
 
     if ergebnis.fehler:
         # Schwerer Fehler — kein Download möglich
-        logger.warning(f"PDF {original_name}: {ergebnis.fehler}")
+        logger.warning(f"Datei {original_name}: {ergebnis.fehler}")
         return render_template(
             "fehler.html",
             fehler=ergebnis.fehler,
             warnungen=ergebnis.warnungen,
-            header_text=ergebnis.header_text[:500],
+            header_text=getattr(ergebnis, "header_text", "")[:500],
         ), 400
 
-    # XLSX generieren
+    # Plancraft-XLSX generieren
     xlsx_name = original_name.rsplit(".", 1)[0] + "_plancraft.xlsx"
     xlsx_pfad = DOWNLOAD_DIR / f"{unique_id}_{xlsx_name}"
     stats = schreibe_xlsx(ergebnis, str(xlsx_pfad))
-    logger.info(f"XLSX generiert: {xlsx_pfad} ({stats['anzahl_positionen']} Positionen)")
+    logger.info(f"XLSX generiert: {xlsx_pfad} ({stats['anzahl_positionen']} Positionen, Format: {erkanntes_format})")
 
     # Erfolgs-Seite mit Download-Link
     return render_template(
@@ -109,6 +136,7 @@ def upload():
         stats=stats,
         warnungen=ergebnis.warnungen,
         positionen=ergebnis.positionen,
+        erkanntes_format=erkanntes_format,
     )
 
 

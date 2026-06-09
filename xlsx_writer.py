@@ -14,7 +14,9 @@ Referenz: plancraft_import_dokumente.xlsx
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
+from typing import Union
 from lv_parser import ParseResult, Position
+from xlsx_parser import XlsxResult
 
 
 # Plancraft-Spaltenbreiten (geschätzt, passen für die meisten Angebote)
@@ -31,7 +33,7 @@ HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill(start_color="2C5F8D", end_color="2C5F8D", fill_type="solid")
 
 
-def schreibe_xlsx(result: ParseResult, output_pfad: str) -> dict:
+def schreibe_xlsx(result: Union[ParseResult, XlsxResult], output_pfad: str) -> dict:
     """Schreibt ParseResult in eine Plancraft-kompatible XLSX.
 
     Args:
