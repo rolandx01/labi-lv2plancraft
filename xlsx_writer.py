@@ -107,14 +107,25 @@ def schreibe_xlsx(result: Union[ParseResult, XlsxResult], output_pfad: str) -> d
 
         row += 1
 
-    # Zusatz-Info als Kommentar in einer freien Zelle (optional)
+    # Zusatz-Info: In Spalte G (rechts der Positionsdaten) statt unter den Positionen.
+    # Grund: Plancraft akzeptiert nur exakt 5 Spalten (Menge..Einheitspreis). Alles was nach
+    # Spalte E in den Datenzeilen steht, wird ignoriert. Aber alles was UNTER den Datenzeilen
+    # in Spalte A..E auftaucht, wird als neue Position interpretiert. Daher: Hinweise rechts
+    # der Daten in einer "Meta"-Spalte, deutlich getrennt durch eine Leerzeile.
     if result.warnungen or result.fehler:
-        info_row = row + 2
-        ws.cell(row=info_row, column=1, value="Hinweise:").font = Font(bold=True, italic=True)
-        for idx, warn in enumerate(result.warnungen, start=1):
-            ws.cell(row=info_row + idx, column=1, value=f"⚠ {warn}").font = Font(italic=True, color="B45F06")
-        for idx, err in enumerate(result.fehler, start=1):
-            ws.cell(row=info_row + idx + len(result.warnungen), column=1, value=f"✗ {err}").font = Font(italic=True, color="CC0000")
+        # Eine zusätzliche "Meta"-Spalte in Spalte G (Index 7) — außerhalb der 5-Spalten-Spec,
+        # aber Plancraft ignoriert sie. Verhindert dass Warnungen als Zeile 24/25 importiert werden.
+        meta_col = 7
+        meta_row = 1
+        ws.cell(row=meta_row, column=meta_col, value="Hinweise").font = Font(bold=True, italic=True)
+        meta_row += 1
+        for warn in result.warnungen:
+            ws.cell(row=meta_row, column=meta_col, value=f"⚠ {warn}").font = Font(italic=True, color="B45F06")
+            meta_row += 1
+        for err in result.fehler:
+            ws.cell(row=meta_row, column=meta_col, value=f"✗ {err}").font = Font(italic=True, color="CC0000")
+            meta_row += 1
+        ws.column_dimensions[get_column_letter(meta_col)].width = 60
 
     wb.save(output_pfad)
 
