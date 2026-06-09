@@ -48,7 +48,10 @@ def schreibe_xlsx(result: Union[ParseResult, XlsxResult], output_pfad: str) -> d
     ws.title = "Positionen"
 
     # Header schreiben
-    headers = ["Menge", "Einheit", "Kurztext", "Langtext", "Einheitspreis (€)"]
+    # Plancraft-Originalvorlage (plancraft_import_dokumente.xlsx) verwendet EXAKT diese
+    # Spaltenüberschriften. Variante wie "Einheitspreis (€)" wurde von Plancraft beim
+    # Import offenbar ignoriert (alle Preise = 0,00 €). Daher: exakt diese Schreibweise.
+    headers = ["Menge", "Einheit", "Kurztext", "Langtext", "Einheitspreis"]
     for col_idx, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.font = HEADER_FONT
@@ -71,8 +74,14 @@ def schreibe_xlsx(result: Union[ParseResult, XlsxResult], output_pfad: str) -> d
         # Menge (leer lassen wenn None, statt 0)
         ws.cell(row=row, column=1, value=pos.menge if pos.menge is not None else "")
 
-        # Einheit
-        ws.cell(row=row, column=2, value=pos.einheit or "")
+        # Einheit: Wenn leer, default "Stk." (Plancrafts Standard-Einheit)
+        # Plancraft mag leere Einheiten nicht — setzt sonst auf "1,00 Stk." was oft
+        # falsch ist für "m²", "l" etc. Wir geben lieber direkt Stk. mit und Labi
+        # ändert es bei Bedarf in Plancraft per Klick.
+        if pos.einheit:
+            ws.cell(row=row, column=2, value=pos.einheit)
+        else:
+            ws.cell(row=row, column=2, value="Stk.")
 
         # Kurztext
         ws.cell(row=row, column=3, value=pos.kurztext)
