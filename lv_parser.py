@@ -63,19 +63,80 @@ RE_MENGE_EINHEIT = re.compile(
     r"\s*$"
 )
 
-# Einheiten, die wir akzeptieren
-GUELTIGE_EINHEITEN = {
-    "stk", "st", "stck", "stück", "stk.",
-    "m", "lfm", "m²", "m2", "qm", "m3", "m³",
-    "kg", "t",
-    "l", "ltr", "ml",
-    "h", "std", "min",
-    "psch", "psch.", "pausch", "pauschal", "pausch.", "pauschwo", "pauchwo",
-    "wo", "tge", "tage", "at", "at.",
-    "mwo", "mwo.", "stwo", "stwo.", "stkwo",
-    "km", "kwh", "%",
-    "lfd", "lfdm", "lfm.",
+# Plancraft akzeptiert NUR diese Einheiten (offizielle Whitelist aus Plancraft-UI).
+# Wenn eine Einheit hier nicht drinsteht, wird der Import in Plancraft stumm abgelehnt.
+# Wir matchen case-insensitive und akzeptieren beide Schreibweisen (mit/ohne Punkt).
+# Quelle: Screenshots aus Plancrafts Web-UI (Roland, 09.06.2026).
+PLANCRAFT_EINHEITEN_OFFIZIELL = [
+    "Eimer", "kg", "km", "kWp", "l", "Lfm.", "m", "m2", "m3",
+    "Min.", "pa.", "Pkg.", "psch.", "Rolle", "Sack", "Std.",
+    "Stk.", "t", "Tube", "Wo.",
+]
+
+# Aliases, die wir im PDF finden → Plancraft-Standard
+# (Begründung: Labis LVs kommen von Architekten, die schreiben mal "m2" mal "m²" usw.)
+EINHEIT_ALIASES = {
+    # Stück
+    "stk": "Stk.", "stk.": "Stk.", "st": "Stk.", "stck": "Stk.",
+    "stück": "Stk.", "stücke": "Stk.", "stk,pa.": "Stk.",
+
+    # Meter / Quadratmeter / Kubikmeter
+    "m": "m", "m²": "m2", "m2": "m2", "qm": "m2",
+    "m³": "m3", "m3": "m3",
+    "lfm": "Lfm.", "lfm.": "Lfm.", "lfd": "Lfm.", "lfdm": "Lfm.",
+    "laufmeter": "Lfm.", "laufende meter": "Lfm.",
+
+    # Gewicht
+    "kg": "kg", "kilogramm": "kg",
+    "t": "t", "to": "t", "tonnen": "t",
+
+    # Volumen
+    "l": "l", "liter": "l", "ltr": "l", "ml": "l",
+    "m3": "m3",
+
+    # Zeit
+    "h": "Std.", "std": "Std.", "std.": "Std.", "stunde": "Std.", "stunden": "Std.",
+    "min": "Min.", "min.": "Min.", "minute": "Min.", "minuten": "Min.",
+    "wo": "Wo.", "wo.": "Wo.", "woche": "Wo.", "wochen": "Wo.",
+
+    # Pauschal
+    "psch": "psch.", "psch.": "psch.", "pschs": "psch.", "pausch": "psch.",
+    "pauschal": "psch.", "pausch.": "psch.", "pa.": "pa.",
+
+    # Leistung
+    "kwp": "kWp", "kw peak": "kWp",
+    "kwh": "kWp",  # wahrscheinlich falsch, aber Plancraft kennt kein kWh
+    "kw": "kWp",
+
+    # Strecke
+    "km": "km", "kilometer": "km",
+
+    # Verpackungseinheiten (direkt übernehmen)
+    "eimer": "Eimer", "rolle": "Rolle", "sack": "Sack", "tube": "Tube",
+    "pkg": "Pkg.", "pkg.": "Pkg.", "packung": "Pkg.", "pack": "Pkg.",
 }
+
+
+def normalisiere_einheit(einheit_roh: str) -> Optional[str]:
+    """Mappt eine rohe Einheit aus dem PDF auf Plancraft-Standard.
+
+    Gibt None zurück, wenn die Einheit NICHT in Plancrafts Whitelist ist.
+    """
+    if not einheit_roh:
+        return None
+    key = einheit_roh.strip().lower().rstrip(".")
+    # Exakter Match im Alias-Dict
+    if key in EINHEIT_ALIASES:
+        return EINHEIT_ALIASES[key]
+    # Fallback: vielleicht ist die Einheit direkt in Plancraft-Whitelist (case-insensitive)
+    for off in PLANCRAFT_EINHEITEN_OFFIZIELL:
+        if off.lower().rstrip(".") == key:
+            return off
+    return None
+
+
+# Rückwärtskompatibilität: alter Name bleibt erhalten
+GUELTIGE_EINHEITEN = set(EINHEIT_ALIASES.keys())
 
 
 # Eigenschafts-Felder wie "Höhe über Gelände : bis 10 m"
@@ -129,10 +190,13 @@ def parse_menge_einheit(zeile: str) -> Optional[tuple]:
         return None
 
     menge_str, einheit, rest = match.groups()
-    einheit_norm = einheit.lower().rstrip(".")
 
-    # Nur gültige Einheiten akzeptieren
-    if einheit_norm not in GUELTIGE_EINHEITEN:
+    # Plancraft-Normalisierung: rohe Einheit → offizielles Plancraft-Format
+    einheit_normalisiert = normalisiere_einheit(einheit)
+
+    # Wenn die Einheit nicht in Plancrafts Whitelist ist: Zeile ignorieren
+    # (es war wahrscheinlich gar keine Mengen-Zeile, sondern etwas anderes)
+    if einheit_normalisiert is None:
         return None
 
     # Menge zu float
@@ -157,7 +221,7 @@ def parse_menge_einheit(zeile: str) -> Optional[tuple]:
             except ValueError:
                 pass
 
-    return menge, einheit_norm, einheitspreis, gesamtpreis
+    return menge, einheit_normalisiert, einheitspreis, gesamtpreis
 
 
 def parse_pdf(pdf_pfad: str) -> ParseResult:
@@ -269,6 +333,14 @@ def parse_pdf(pdf_pfad: str) -> ParseResult:
                 position_erwartet_menge = False
                 continue
 
+            # Spezialfall: Zeile sieht aus wie eine Mengen-Zeile mit zusammengesetzter
+            # Einheit (z.B. "StWo" = Stk × Woche), die Plancraft nicht direkt kennt.
+            # Wir lassen die Zeile im Langtext und geben später eine Warnung aus,
+            # dass Labi diese Position manuell in Plancraft nachpflegen muss.
+            if re.match(r"^\s*\d{1,3}(?:\.\d{3})*(?:,\d+)?\s+[A-Za-z]+Wo\s+", zeile):
+                current_langtext_zeilen.append(zeile)
+                continue
+
             # Eigenschafts-Feld (z.B. "Höhe über Gelände : 10 m")? → in Langtext
             if ist_eigenschafts_feld(zeile):
                 current_langtext_zeilen.append(zeile)
@@ -301,6 +373,28 @@ def parse_pdf(pdf_pfad: str) -> ParseResult:
                     f"({anteil:.0f}%) haben keine erkannte Menge. "
                     "Mögliche Ursache: Mengen-Einheit-Zeile hat ungewöhnliches Format."
                 )
+
+        # Sammle Einheiten, die wir gefunden haben, aber nicht in Plancraft importiert werden können
+        fremde_einheiten_im_langtext = set()
+        for p in result.positionen:
+            if not p.langtext:
+                continue
+            # Suche im Langtext nach "XX,XX <Einheit>Wo" Mustern (StWo, mWo etc.)
+            matches = re.findall(
+                r"\d+(?:[.,]\d+)?\s+([A-Za-z]+Wo)\b",
+                p.langtext,
+            )
+            for m in matches:
+                fremde_einheiten_im_langtext.add(m)
+
+        if fremde_einheiten_im_langtext:
+            result.warnungen.append(
+                f"{len(fremde_einheiten_im_langtext)} zusammengesetzte Einheit(en) "
+                f"gefunden ({', '.join(sorted(fremde_einheiten_im_langtext))}), "
+                "die Plancraft NICHT direkt unterstützt. "
+                "Diese Positionen müssen manuell in Plancraft nachgepflegt werden "
+                "(Menge in Stk./m, EP entsprechend anpassen)."
+            )
 
     return result
 
