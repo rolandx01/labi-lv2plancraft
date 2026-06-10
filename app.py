@@ -23,6 +23,7 @@ from werkzeug.utils import secure_filename
 from lv_parser import parse_pdf
 from xlsx_parser import parse_xlsx
 from xlsx_writer import schreibe_xlsx
+from validator import validiere_xlsx
 
 # Logging konfigurieren (Render sammelt stdout/stderr)
 logging.basicConfig(
@@ -128,7 +129,17 @@ def upload():
     stats = schreibe_xlsx(ergebnis, str(xlsx_pfad))
     logger.info(f"XLSX generiert: {xlsx_pfad} ({stats['anzahl_positionen']} Positionen, Format: {erkanntes_format})")
 
-    # Erfolgs-Seite mit Download-Link
+    # FIX 3: Pre-Validierung der geschriebenen XLSX, bevor User sie runterladen kann.
+    # Hintergrund: Plancrafts "irgendein Problem aufgetaucht" ist kryptisch. Wir prüfen
+    # jetzt VOR dem Download, ob die XLSX alle Anforderungen erfüllt.
+    validierung = validiere_xlsx(str(xlsx_pfad))
+    logger.info(
+        f"Validierung: status={validierung.status}, "
+        f"probleme={len(validierung.probleme)}, "
+        f"warnungen={len(validierung.warnungen)}"
+    )
+
+    # Erfolgs-Seite mit Download-Link + Validierungs-Status
     return render_template(
         "erfolg.html",
         download_name=f"{unique_id}_{xlsx_name}",
@@ -137,6 +148,7 @@ def upload():
         warnungen=ergebnis.warnungen,
         positionen=ergebnis.positionen,
         erkanntes_format=erkanntes_format,
+        validierung=validierung.to_dict(),
     )
 
 

@@ -18,6 +18,7 @@ Wichtig: KEINE KI, nur deterministisches Parsen.
 
 from dataclasses import dataclass, field
 from typing import List, Optional
+import re
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -35,14 +36,47 @@ class XlsxResult:
 
 
 def _parse_plancraft_format(ws: Worksheet) -> List[Position]:
-    """Liest ein XLSX im 5-Spalten-Plancraft-Format."""
+    """Liest ein XLSX im 5-Spalten-Plancraft-Format.
+
+    Sektion-Header (Zeile mit Text in Spalte C, aber None in Spalte A/B/E)
+    werden als Pseudo-Positionen behalten (Menge=1, Einheit="psch."), damit
+    die Sektion-Struktur in Plancraft sichtbar bleibt.
+    """
     positionen = []
     for row in ws.iter_rows(min_row=2, values_only=True):  # Header überspringen
         # row = (menge, einheit, kurztext, langtext, einheitspreis)
-        if not row or row[2] is None or str(row[2]).strip() == "":
-            continue  # Leerzeile
+        if not row:
+            continue
 
-        menge_raw, einheit_raw, kurztext, langtext, einheitspreis = row
+        # Padding falls Zeile kürzer als 5 Spalten
+        menge_raw, einheit_raw, kurztext, langtext, einheitspreis = (list(row) + [None]*5)[:5]
+
+        # Sektion-Header erkennen: Spalte C hat Text, A+B+E leer
+        # Bsp: (None, None, "Allgemein", None, None) oder (None, None, "Stundenlohnarbeiten", None, None)
+        ist_sektion_header = (
+            (menge_raw is None or str(menge_raw).strip() == "")
+            and (einheit_raw is None or str(einheit_raw).strip() == "")
+            and kurztext is not None and str(kurztext).strip() != ""
+            and (langtext is None or str(langtext).strip() == "")
+            and (einheitspreis is None or str(einheitspreis).strip() == "")
+        )
+        if ist_sektion_header:
+            # Als Pseudo-Position: Menge=1, Einheit=psch., Preis leer
+            # → erscheint in Plancraft als "1 psch. Sektionsname" (Plancraft akzeptiert das)
+            positionen.append(Position(
+                menge=1,
+                einheit="psch.",
+                kurztext=str(kurztext).strip(),
+                langtext="",
+                einheitspreis=None,
+                pos_nr="",  # Keine Positionsnummer für Sektion
+                seite=1,
+            ))
+            continue
+
+        # Komplett leere Zeile überspringen
+        if all(c is None or str(c).strip() == "" for c in row):
+            continue
 
         # Menge
         try:
@@ -158,6 +192,10 @@ def _parse_foerderantrag_format(ws: Worksheet) -> List[Position]:
         G: ISFP
         H: Förderbetrag
         I: (optional)
+
+    Wichtig: Manche LVs (z.B. BAFA-Anträge) haben Sub-Positionen ohne eigene
+    Pos-Nr in Spalte A. Diese erben den Kontext der vorherigen Hauptposition
+    und werden als separate Positionen mit eigenem Kurztext ausgegeben.
     """
     positionen = []
 
@@ -171,20 +209,100 @@ def _parse_foerderantrag_format(ws: Worksheet) -> List[Position]:
     if header_row_idx is None:
         return positionen
 
+    # Tracken: aktuelle Hauptposition (für Sub-Positionen)
+    aktuelle_hauptposition = None  # tuple (pos_nr, kurztext_haupt)
+    letzte_pos_war_sektion_header = False  # Damit wir nicht in falsche Richtung tracken
+
     for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), header_row_idx + 1):
         if not row or len(row) < 4:
             continue
 
         pos_nr_raw, menge_raw, einheit_raw, beschreibung, preis_raw, gesamt_raw, *_ = row
 
-        # Sektions-Trenner erkennen: Zeile mit Beschreibung aber keine Pos-Nr/Menge
-        # Beispiele: "Dämmung des Daches", "Austausch der Fenster..."
-        if (not pos_nr_raw or str(pos_nr_raw).strip() in ("", "None")) and beschreibung:
-            # Das ist eine Sektionsüberschrift, überspringen
+        # Strings für Vergleiche
+        pos_nr_str = str(pos_nr_raw).strip() if pos_nr_raw is not None else ""
+        beschreibung_str = str(beschreibung).strip() if beschreibung is not None else ""
+        einheit_str = str(einheit_raw).strip() if einheit_raw is not None else ""
+        preis_str = str(preis_raw).strip() if preis_raw is not None else ""
+        gesamt_str = str(gesamt_raw).strip() if gesamt_raw is not None else ""
+
+        # Komplett leere Zeile überspringen
+        if (not pos_nr_str or pos_nr_str in ("None", "·", ".")) \
+                and not beschreibung_str and not einheit_str \
+                and not preis_str and not gesamt_str:
             continue
 
-        # Leere Zeile oder reine Summenzeile
-        if not beschreibung and not menge_raw and not preis_raw:
+        # Reine Footer/Summen-Zeilen erkennen (z.B. "Gesamt:", "MWST", "Förderung")
+        # Diese haben KEINE pos_nr, KEIN einheit, ABER text in D oder E
+        footer_keywords = ("gesamtkosten", "gesamt:", "mwst", "förderung", "nach abzug",
+                           "eigenleistung", "eigenmittel", "bank kfw", "verkauf", "solar")
+        ist_footer_zeile = (
+            not pos_nr_str
+            and not einheit_str
+            and not preis_str
+            and (beschreibung_str.lower().startswith(footer_keywords)
+                 or gesamt_str.lower().startswith(footer_keywords))
+        )
+        if ist_footer_zeile:
+            continue
+
+        # Sektion-Trenner: Zeile mit Beschreibung in Spalte A oder D, aber keine Pos-Nr/Menge/Einheit/Preis
+        # Beispiele: "Dämmung des Daches" (in A), "Fliesenarbeiten Bäder" (in D)
+        # WICHTIG: Eine Sektion hat NICHTS in den Datenspalten (B/C/E).
+        # Wenn B/C/E befüllt sind, ist es eine echte Position (ggf. Sub-Position).
+        hat_daten = (
+            (menge_raw is not None and str(menge_raw).strip() not in ("", "None", "·", "."))
+            or einheit_str
+            or preis_str
+        )
+        # Sektion-Verdacht: nur D hat Text, A ist leer, B/C/E sind leer
+        # ABER: Wenn die VORHERIGE Zeile eine Hauptposition war, ist das vermutlich
+        # eine Sub-Position (z.B. R13 folgt auf R12 mit "1. " = Hauptposition)
+        ist_vermutlich_sub = (
+            not pos_nr_str
+            and not hat_daten
+            and beschreibung_str
+            and aktuelle_hauptposition is not None
+        )
+        ist_sektion_header = (
+            (not pos_nr_str or pos_nr_str in ("None", "·", "."))
+            and not hat_daten  # Sektion hat NIE Daten in B/C/E
+            and beschreibung_str
+            and not ist_vermutlich_sub  # Nur Sektion wenn keine vorige Hauptposition
+        )
+        # Spezialfall: Sektion in Spalte A (z.B. "Zimmer Innentüren")
+        if pos_nr_str and not re.match(r"^\d+\.?\s*$", pos_nr_str) and not hat_daten:
+            ist_sektion_header = True
+
+        if ist_sektion_header:
+            # FIX: Sektion-Header als Pseudo-Position behalten
+            s_name = pos_nr_str if pos_nr_str and pos_nr_str not in ("None", "·", ".") else beschreibung_str
+            positionen.append(Position(
+                menge=1,
+                einheit="psch.",
+                pos_nr="",
+                kurztext=s_name[:120],
+                langtext="",
+                einheitspreis=None,
+                seite=1,
+            ))
+            aktuelle_hauptposition = None  # Sektion-Header beendet vorherigen Block
+            continue
+
+        # Echte Position: pos_nr ist "1." oder "1" oder leer (Sub-Position)
+        pos_nr = ""
+        if pos_nr_raw and re.match(r"^\d+\.?\s*$", pos_nr_str):
+            m = re.match(r"^(\d+)", pos_nr_str)
+            if m:
+                pos_nr = m.group(1)
+                # Das ist eine Hauptposition — tracken für Sub-Items
+                # Kurztext = erste 120 Zeichen der Beschreibung
+                aktuelle_hauptposition = (pos_nr, beschreibung_str[:80] if beschreibung_str else "")
+        elif not pos_nr_str and aktuelle_hauptposition and beschreibung_str:
+            # Sub-Position: erbt pos_nr der Hauptposition mit Suffix
+            pos_nr = f"{aktuelle_hauptposition[0]}.sub"
+        elif not pos_nr_str and aktuelle_hauptposition and not beschreibung_str:
+            # Hat weder pos_nr noch Beschreibung — Müll
             continue
 
         # Menge
@@ -194,7 +312,7 @@ def _parse_foerderantrag_format(ws: Worksheet) -> List[Position]:
             menge = None
 
         # Einheit
-        einheit = normalisiere_einheit(str(einheit_raw)) if einheit_raw else None
+        einheit = normalisiere_einheit(einheit_str) if einheit_str else None
 
         # Einheitspreis (Spalte E)
         try:
@@ -202,22 +320,26 @@ def _parse_foerderantrag_format(ws: Worksheet) -> List[Position]:
         except (ValueError, TypeError):
             ep = None
 
-        # Positionsnummer: nur die Zahl aus "1. " extrahieren
-        pos_nr = ""
-        if pos_nr_raw:
-            pos_str = str(pos_nr_raw).strip()
-            # "1. " oder "1" → "1"
-            import re
-            m = re.match(r"^(\d+)", pos_str)
-            if m:
-                pos_nr = m.group(1)
+        # Kurztext: erste Zeile der Beschreibung (max 120 Zeichen)
+        kurztext = beschreibung_str[:120] if beschreibung_str else ""
+
+        # Wenn weder Kurztext noch Langtext, sondern nur ein Preis — versuch
+        # einen sinnvollen Kurztext zu generieren aus Kontext
+        if not kurztext and aktuelle_hauptposition:
+            kurztext = f"{aktuelle_hauptposition[1]} (Sub-Position)"[:120]
+
+        # Langtext = ganze Beschreibung
+        langtext = beschreibung_str
+
+        if not kurztext and not langtext:
+            continue
 
         positionen.append(Position(
             menge=menge,
             einheit=einheit,
             pos_nr=pos_nr,
-            kurztext=str(beschreibung).strip()[:120] if beschreibung else "",  # Kurztext = erste 120 Zeichen
-            langtext=str(beschreibung).strip() if beschreibung else "",  # Langtext = ganzer Text
+            kurztext=kurztext,
+            langtext=langtext,
             einheitspreis=ep,
             seite=1,
         ))
@@ -278,6 +400,18 @@ def _parse_kostenschaetzung_format(ws: Worksheet) -> List[Position]:
         if pos_nr_str and not re.match(r"^\d+", pos_nr_str):
             # Sektion-Trenner
             if not einheit_raw and not menge_raw and not preis_raw:
+                # FIX: Sektion-Header als Pseudo-Position behalten (Menge=1, Einheit=psch.)
+                # Begründung: Plancraft braucht die Sektion-Struktur, sonst weiss Labi nicht
+                # welche Position zu welcher Sektion gehört. Sektion in Kurztext.
+                positionen.append(Position(
+                    menge=1,
+                    einheit="psch.",
+                    pos_nr="",
+                    kurztext=pos_nr_str,  # Sektion-Name als Kurztext
+                    langtext="",
+                    einheitspreis=None,
+                    seite=1,
+                ))
                 continue
             # Andernfalls ist es eine echte Position mit Text in Spalte A (selten)
 

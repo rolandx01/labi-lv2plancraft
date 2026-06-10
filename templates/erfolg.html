@@ -136,6 +136,31 @@
             color: #1e3c72;
         }
         a.button.secondary:hover { background: #e0e0e0; }
+
+        {# FIX 3: Validation-Status Styling #}
+        .validation {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 16px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+        .validation.ok { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+        .validation.warnung { background: #fff3cd; border: 1px solid #ffe082; color: #856404; }
+        .validation.fehler { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; }
+        .validation-icon { font-size: 24px; line-height: 1; }
+        .error-item {
+            background: #fff5f5;
+            border-left: 4px solid #dc3545;
+            padding: 10px 14px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #721c24;
+        }
+        .error-icon { font-weight: bold; color: #dc3545; margin-right: 6px; }
     </style>
 </head>
 <body>
@@ -170,6 +195,45 @@
                 <span class="warning-icon">⚠</span>{{ warn }}
             </div>
         {% endfor %}
+
+        {# FIX 3: Pre-Validierung anzeigen #}
+        {% if validierung %}
+            {% if validierung.status == "ok" %}
+                <div class="validation ok">
+                    <span class="validation-icon">✅</span>
+                    <div>
+                        <strong>Plancraft-Validierung: OK</strong><br>
+                        <small>{{ validierung.info[0] if validierung.info else 'Alle Checks bestanden' }}</small>
+                    </div>
+                </div>
+            {% elif validierung.status == "warnung" %}
+                <div class="validation warnung">
+                    <span class="validation-icon">⚠</span>
+                    <div>
+                        <strong>Validierung: Warnungen</strong><br>
+                        <small>Download möglich, aber prüfe die Hinweise unten</small>
+                    </div>
+                </div>
+                {% for w in validierung.warnungen %}
+                    <div class="warning">
+                        <span class="warning-icon">⚠</span>{{ w }}
+                    </div>
+                {% endfor %}
+            {% elif validierung.status == "fehler" %}
+                <div class="validation fehler">
+                    <span class="validation-icon">✗</span>
+                    <div>
+                        <strong>Validierung: PROBLEME GEFUNDEN</strong><br>
+                        <small>Plancraft wird diese XLSX vermutlich ablehnen. Bitte prüfe:</small>
+                    </div>
+                </div>
+                {% for p in validierung.probleme %}
+                    <div class="error-item">
+                        <span class="error-icon">✗</span>{{ p }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endif %}
 
         <div class="positionen-preview">
             <h3>Vorschau (erste 10 Positionen)</h3>
