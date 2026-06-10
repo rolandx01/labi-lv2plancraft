@@ -178,12 +178,14 @@ def parse_menge_einheit(zeile: str) -> Optional[tuple]:
     """Versucht Menge + Einheit aus einer Zeile zu extrahieren.
     Gibt (menge, einheit, einheitspreis, gesamtpreis) zurück oder None.
     """
-    # Vereinfachte Version: Menge am Zeilenanfang, dann Einheit
+    # FIX: Regex muss sowohl "1,00" (deutsch) als auch "1.00" (englisch) als Dezimal
+    # UND "1.000,00" (deutsch mit Tausender) akzeptieren. Das Original-Pattern hat
+    # (?:\.\d{3})* nur für Tausender benutzt, was "1.00" als 100 interpretierte.
     match = re.match(
         r"^\s*"
-        r"(\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+)\s+"  # Menge
-        r"([A-Za-z²³/]{1,8})"                       # Einheit
-        r"\s*(.*)$",                                 # Rest (für Preise)
+        r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?|\d+)\s+"  # Menge: 1,00 / 1.00 / 1.000,00 / 1,000.00 / 100
+        r"([A-Za-z²³/]{1,8})"                            # Einheit: m / m² / Stk / psch
+        r"\s*(.*)$",                                     # Rest (für Preise)
         zeile,
     )
     if not match:
@@ -199,27 +201,28 @@ def parse_menge_einheit(zeile: str) -> Optional[tuple]:
     if einheit_normalisiert is None:
         return None
 
-    # Menge zu float
+    # Menge zu float (deutsche Zahlen-Logik: "1.00"=1, "1,00"=1, "1.000"=1000)
     try:
-        menge = float(menge_str.replace(".", "").replace(",", "."))
-    except ValueError:
+        from xlsx_parser import parse_deutsche_zahl  # Lazy import, vermeidet Zirkelbezug
+        menge = parse_deutsche_zahl(menge_str)
+        if menge is None:
+            return None
+    except (ValueError, TypeError):
         return None
 
     # Preise extrahieren (falls vorhanden)
     einheitspreis = None
     gesamtpreis = None
     if rest:
-        preise = re.findall(r"(\d{1,3}(?:\.\d{3})*(?:,\d+)?)\s*EUR?", rest)
+        preise = re.findall(r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?)\s*EUR?", rest)
         if len(preise) >= 1:
-            try:
-                einheitspreis = float(preise[0].replace(".", "").replace(",", "."))
-            except ValueError:
-                pass
+            ep = parse_deutsche_zahl(preise[0])
+            if ep is not None:
+                einheitspreis = ep
         if len(preise) >= 2:
-            try:
-                gesamtpreis = float(preise[1].replace(".", "").replace(",", "."))
-            except ValueError:
-                pass
+            gp = parse_deutsche_zahl(preise[1])
+            if gp is not None:
+                gesamtpreis = gp
 
     return menge, einheit_normalisiert, einheitspreis, gesamtpreis
 
@@ -302,7 +305,28 @@ def parse_pdf(pdf_pfad: str) -> ParseResult:
         if ist_footer_oder_seitenzahl(zeile):
             continue
 
-        # Neue Position erkannt?
+        # FIX: Wenn wir in einer Position sind, prüfe ZUERST ob die Zeile eine
+        # Menge-Einheit-Zeile ist. Wenn ja, NICHT als neue Position interpretieren.
+        # Grund: Im PDF-Format kommt nach der Pos-Nr-Zeile (z.B. "10.10  Bauzaun...")
+        # die Menge-Zeile ("120.00 Lfm ........ EUR ........ EUR"). Wenn man die
+        # Menge-Zeile zuerst matched, vermeidet man, dass "1.00 psch" als neue
+        # Position "1.00" mit Kurztext "psch ..." interpretiert wird.
+        if current_pos:
+            menge_einheit = parse_menge_einheit(zeile)
+            if menge_einheit:
+                current_pos.menge, current_pos.einheit, current_pos.einheitspreis, current_pos.gesamtpreis = menge_einheit
+                position_erwartet_menge = False
+                continue
+
+            # Spezialfall: Zeile sieht aus wie eine Mengen-Zeile mit zusammengesetzter
+            # Einheit (z.B. "StWo" = Stk × Woche), die Plancraft nicht direkt kennt.
+            # Wir lassen die Zeile im Langtext und geben später eine Warnung aus,
+            # dass Labi diese Position manuell in Plancraft nachpflegen muss.
+            if re.match(r"^\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?\s+[A-Za-z]+Wo\s+", zeile):
+                current_langtext_zeilen.append(zeile)
+                continue
+
+        # Neue Position erkannt? (NUR wenn nicht gerade eine Menge-Zeile verarbeitet wurde)
         pos_match = RE_POS_NR.match(zeile)
         if pos_match:
             # Vorherige Position abschließen
@@ -323,24 +347,6 @@ def parse_pdf(pdf_pfad: str) -> ParseResult:
 
         # Wenn wir in einer Position sind
         if current_pos:
-            # Versuche IMMER Menge + Einheit zu extrahieren, solange die Zeile
-            # nicht bereits als Eigenschaft/Fließtext "verbraucht" ist.
-            # Realität: Die Menge-Zeile (XX,XX Einheit ..... EUR ..... EUR)
-            # ist immer sehr eindeutig — die erwischen wir auch nach Fließtext.
-            menge_einheit = parse_menge_einheit(zeile)
-            if menge_einheit:
-                current_pos.menge, current_pos.einheit, current_pos.einheitspreis, current_pos.gesamtpreis = menge_einheit
-                position_erwartet_menge = False
-                continue
-
-            # Spezialfall: Zeile sieht aus wie eine Mengen-Zeile mit zusammengesetzter
-            # Einheit (z.B. "StWo" = Stk × Woche), die Plancraft nicht direkt kennt.
-            # Wir lassen die Zeile im Langtext und geben später eine Warnung aus,
-            # dass Labi diese Position manuell in Plancraft nachpflegen muss.
-            if re.match(r"^\s*\d{1,3}(?:\.\d{3})*(?:,\d+)?\s+[A-Za-z]+Wo\s+", zeile):
-                current_langtext_zeilen.append(zeile)
-                continue
-
             # Eigenschafts-Feld (z.B. "Höhe über Gelände : 10 m")? → in Langtext
             if ist_eigenschafts_feld(zeile):
                 current_langtext_zeilen.append(zeile)
