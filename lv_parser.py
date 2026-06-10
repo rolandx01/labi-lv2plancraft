@@ -50,6 +50,13 @@ class ParseResult:
 # um False-Positives auf z.B. "10.20 1,5 m" (Menge mit Punkt) zu vermeiden.
 RE_POS_NR = re.compile(r"^(\d{1,3}\.\d{1,3}(?:\.\d{1,3})?)\s+([A-Za-zÄÖÜäöüß].+)$")
 
+# FIX 5: Sektion-Header Pattern — "10 Allgemeine Leistungen" (1-3 stellige Nr + 1+ Leerzeichen + Text)
+# Wichtig: Sektion-Header haben KEINE Punkte in der Nummer, sind typisch 2-stellig.
+# Wir verlangen NICHT "2+ Leerzeichen" weil reportlab und andere PDF-Generatoren oft nur
+# ein einziges Leerzeichen zwischen Nummer und Text setzen.
+# Beispiel: "10 Allgemeine Leistungen", "20 Abbrucharbeiten", "30 Maurer- und Putzarbeiten"
+RE_SEKTION_HEADER = re.compile(r"^(\d{1,3})\s+([A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß\s\-/&,]{3,80})$")
+
 # Menge + Einheit + EP + GP: "  10,00 m ............,..... EUR ............,..... EUR"
 # Erfasst: (1) Menge, (2) Einheit, (3) Einheitspreis (optional), (4) Gesamtpreis (optional)
 RE_MENGE_EINHEIT = re.compile(
@@ -343,6 +350,31 @@ def parse_pdf(pdf_pfad: str) -> ParseResult:
             )
             current_langtext_zeilen = []
             position_erwartet_menge = True
+            continue
+
+        # FIX 5: Sektion-Header im PDF-Format ("10  Allgemeine Leistungen")
+        # Erkennt 1-3 stellige Nummer + 2+ Leerzeichen + Text (mind. 4 Zeichen, nur Buchstaben)
+        # Wird als Pseudo-Position mit pos_nr="", Menge=1, Einheit="psch." eingefügt.
+        sektion_match = RE_SEKTION_HEADER.match(zeile)
+        if sektion_match:
+            # Vorherige Position abschließen
+            if current_pos:
+                if current_langtext_zeilen:
+                    current_pos.langtext = "\n".join(current_langtext_zeilen).strip()
+                result.positionen.append(current_pos)
+
+            _, sektion_name = sektion_match.groups()
+            result.positionen.append(Position(
+                pos_nr="",
+                kurztext=sektion_name.strip(),
+                langtext="",
+                menge=1,
+                einheit="psch.",
+                seite=seite,
+            ))
+            current_pos = None
+            current_langtext_zeilen = []
+            position_erwartet_menge = False
             continue
 
         # Wenn wir in einer Position sind

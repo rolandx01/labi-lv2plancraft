@@ -130,6 +130,39 @@ def schreibe_xlsx(result: Union[ParseResult, XlsxResult], output_pfad: str) -> d
                 ungueltige_positionen.append(f"Zeile '{pos.pos_nr}': kein Kurztext, übersprungen")
                 continue
 
+        # FIX 4: Wenn eine Position WEDER Menge NOCH gültige Einheit hat (z.B. StWo/mwo
+        # die wir nicht normalisieren konnten), komplett rauswerfen.
+        # Plancraft stolpert über leere Menge + Default-Einheit — das gibt "irgendein Problem".
+        # Statt Stk. als Default zu setzen (was die Sache verschlimmert), zeigen wir es
+        # nur in der Meta-Spalte als Warnung.
+        import re as _re
+        hat_zusammengesetzte_einheit = False
+        if pos.kurztext or pos.langtext:
+            text = (pos.kurztext or "") + " " + (pos.langtext or "")
+            if _re.search(r"\b[A-Za-z]+Wo\b", text):  # StWo, mWo, mwo, etc.
+                hat_zusammengesetzte_einheit = True
+
+        if pos.menge is None and (not pos.einheit or pos.einheit == "Stk."):
+            # Wenn zusammengesetzte Einheit im Text erwähnt → ist eine StWo/mwo/mWo-Position
+            if hat_zusammengesetzte_einheit:
+                ungueltige_positionen.append(
+                    f"Zeile '{pos.pos_nr}' ({pos.kurztext[:40]}): zusammengesetzte Einheit "
+                    f"(StWo/mwo etc.) — komplett entfernt, muss in Plancraft manuell als "
+                    f"Stk. mit angepasstem EP nachgepflegt werden."
+                )
+                continue
+            # Wenn Sektion-Header (kein pos_nr, nur Kurztext) → als Sektion behalten
+            elif not pos.pos_nr:
+                pass  # Sektion-Header, soll rausgeschrieben werden
+            # Sonst: Hauptposition ohne eigene Menge (Sub-Items werden separat geschrieben)
+            # → rauswerfen, sonst meckert Plancraft
+            else:
+                ungueltige_positionen.append(
+                    f"Zeile '{pos.pos_nr}' ({pos.kurztext[:40]}): Hauptposition ohne eigene "
+                    f"Menge, Sub-Items werden separat geschrieben. Übersprungen."
+                )
+                continue
+
         # Bonus-Fix: Footer-Zeilen aus dem Langtext rausfiltern
         sauberer_langtext = _filtere_footer_zeilen(pos.langtext)
 
